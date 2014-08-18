@@ -5,10 +5,12 @@ import operator
 import os
 import re
 import subprocess
+import time
 
 
 GERRIT_SERVER = "review.openstack.org"
 GERRIT_PORT = 29418
+MINIMUM_REVIEW_AGE = 15 * 60  # 15 minutes
 
 SEARCH = ("status:open AND "
           "(project:openstack/swift OR project:openstack/swift-bench OR project:openstack/python-swiftclient) AND "
@@ -33,9 +35,14 @@ def fetch_failed_reviews():
 
 
 def should_ignore_review(review):
-    # OpenStack Proposal Bot just does the global requirements stuff, and
-    # nobody cares.
-    return review['owner']['username'] == 'proposal-bot'
+    return (
+        # OpenStack Proposal Bot just does the global requirements stuff, and
+        # nobody cares.
+        review['owner']['username'] == 'proposal-bot' or
+
+        # Anything with a failure less than $MINIMUM_REVIEW_AGE seconds old
+        # should wait to give Elastic Recheck a chance to do its thing.
+        time.time() - review['comments'][-1]['timestamp'] <= MINIMUM_REVIEW_AGE)
 
 
 def is_flaky_job(job_name):
