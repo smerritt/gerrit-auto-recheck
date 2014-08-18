@@ -2,6 +2,7 @@
 
 import json
 import operator
+import os
 import re
 import subprocess
 
@@ -11,12 +12,12 @@ GERRIT_PORT = 29418
 
 SEARCH = ("status:open AND "
           "(project:openstack/swift OR project:openstack/swift-bench OR project:openstack/python-swiftclient) AND "
-          "(label:Verified=-1 OR label:Verified=-2) AND branch:master")
+          "(label:Verified=-1 OR label:Verified=-2) AND NOT label:WorkFlow=-1")
 
 
 def fetch_failed_reviews():
     gerrit_cmd = ['ssh', '-p', str(GERRIT_PORT), GERRIT_SERVER, 'gerrit', 'query',
-                  '--format=JSON', '--comments']
+                  '--format=JSON', '--comments', '--current-patch-set']
 
     gerrit_process = subprocess.Popen(
         gerrit_cmd + SEARCH.split(),
@@ -29,6 +30,12 @@ def fetch_failed_reviews():
     reviews = [json.loads(line) for line in lines]
     reviews.sort(key=operator.itemgetter('url'))
     return reviews
+
+
+def should_ignore_review(review):
+    # OpenStack Proposal Bot just does the global requirements stuff, and
+    # nobody cares.
+    return review['owner']['username'] == 'proposal-bot'
 
 
 def is_flaky_job(job_name):
@@ -102,7 +109,7 @@ def extract_bug_number_from_er_message(comment):
     """
     Return the bug number that Elastic Recheck thinks broke the build.
 
-    If multiple bug numbers are present, arbitrarily picks one.
+    If multiple bug numbers are present, arbitrarily pick one.
     """
     # XXX write me
     return None
@@ -152,7 +159,31 @@ def retry_with(review):
     return comment
 
 
-for review in fetch_failed_reviews():
-    retry_comment = retry_with(review)
-    if retry_comment is not None:
-        print "%s -> %r" % (review['url'], retry_comment)
+def post_comment(review_id, comment):
+    gerrit_cmd = ['ssh', '-p', str(GERRIT_PORT), GERRIT_SERVER, 'gerrit',
+                  'review', '--message', '"%s"' % comment, review_id]
+    subprocess.check_call(gerrit_cmd)
+
+
+def main():
+    did_something = False
+    for review in fetch_failed_reviews():
+        retry_comment = retry_with(review)
+        if retry_comment is not None:
+            if should_ignore_review(review):
+                continue
+            did_something = True
+            print "%s -> %s" % (review['url'], retry_comment)
+
+            should_post_comment = (
+                os.environ.get('AUTO_RECHECK_POST', 'no').lower()
+                in ('true', '1', 'yes', 'on', 't', 'y'))
+            if should_post_comment:
+                post_comment(review['currentPatchSet']['revision'],
+                             retry_comment)
+    if not did_something:
+        print "No reviews need rechecks."
+
+
+if __name__ == '__main__':
+    main()
