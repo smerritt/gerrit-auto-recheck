@@ -1,10 +1,13 @@
-#!/usr/bin/env python
+#!/usr/bin/env python -u
 
+import argparse
 import json
+import logging
 import operator
 import os
 import re
 import subprocess
+import sys
 import time
 
 
@@ -20,12 +23,13 @@ SEARCH = ("status:open AND "
 def fetch_failed_reviews():
     gerrit_cmd = ['ssh', '-p', str(GERRIT_PORT), GERRIT_SERVER, 'gerrit', 'query',
                   '--format=JSON', '--comments', '--current-patch-set']
+    gerrit_cmd.extend(SEARCH.split())
 
-    gerrit_process = subprocess.Popen(
-        gerrit_cmd + SEARCH.split(),
-        stdout=subprocess.PIPE)
+    logging.debug("Running %s", ' '.join(gerrit_cmd))
+    gerrit_process = subprocess.Popen(gerrit_cmd, stdout=subprocess.PIPE)
 
     output, _ = gerrit_process.communicate()
+    logging.debug("SSH complete")
 
     lines = [line for line in output.splitlines() if line]
     lines.pop()  # last record is query stats; we don't care
@@ -35,14 +39,17 @@ def fetch_failed_reviews():
 
 
 def should_ignore_review(review):
-    return (
-        # OpenStack Proposal Bot just does the global requirements stuff, and
-        # nobody cares.
-        review['owner']['username'] == 'proposal-bot' or
+    # OpenStack Proposal Bot just does the global requirements stuff, and
+    # nobody cares.
+    if review['owner']['username'] == 'proposal-bot':
+        logging.debug("  Ignoring review because it's from proposal-bot")
+        return True
 
-        # Anything with a failure less than $MINIMUM_REVIEW_AGE seconds old
-        # should wait to give Elastic Recheck a chance to do its thing.
-        time.time() - review['comments'][-1]['timestamp'] <= MINIMUM_REVIEW_AGE)
+    # Anything with a failure less than $MINIMUM_REVIEW_AGE seconds old
+    # should wait to give Elastic Recheck a chance to do its thing.
+    if time.time() - review['comments'][-1]['timestamp'] <= MINIMUM_REVIEW_AGE:
+        logging.debug("  Ignoring review because it's too new")
+        return True
 
 
 def is_flaky_job(job_name):
@@ -93,7 +100,7 @@ Build failed.  For information on how to proceed, see https://wiki.openstack.org
     Note that "check-grenade-dsvm-neutron" and "check-tempest-dsvm-neutron-heat-slow" do not appear in the output;
     they are non-voting.
     """
-    job_status = re.compile("- (\S+) http://\S+ : (SUCCESS|FAILURE)")
+    job_status = re.compile("- (\S+) http://\S+ : (\S+)")
 
     successes = []
     failures = []
@@ -118,8 +125,17 @@ def extract_bug_number_from_er_message(comment):
 
     If multiple bug numbers are present, arbitrarily pick one.
     """
-    # XXX write me
-    return None
+    # Sample ER comment: u"Patch Set 8:
+    #
+    # I noticed jenkins failed, I think you hit bug(s):
+    #
+    # - check-tempest-dsvm-neutron-full: https://bugs.launchpad.net/bugs/1357476 https://bugs.launchpad.net/bugs/1254890
+    #
+    # If you believe we've correctly identified the failure, feel free to leave a 'recheck' comment to run the tests again.
+    # For more details on this and other bugs, please see http://status.openstack.org/elastic-recheck/"
+    bug_link = re.compile("https://bugs.launchpad.net/bugs/(\d+)")
+    match = re.search(bug_link, comment)
+    return int(match.group(1)) if match else None
 
 
 def retry_with(review):
@@ -133,6 +149,7 @@ def retry_with(review):
 
     comments = review.get('comments', [])
     if not comments:
+        logging.debug("  No review comments")
         return None
 
     # Either the last review comment is Jenkins *or* the second-to-last
@@ -145,6 +162,7 @@ def retry_with(review):
         er_comment = comments[-1]
         ci_comment = comments[-2]
     else:
+        logging.debug("  No CI comment in last 2 review comments")
         return None
 
     failed_jobs, successful_jobs = extract_jobs_from_ci_message(
@@ -152,17 +170,25 @@ def retry_with(review):
 
     # It is highly atypical that every job would fail, so let's fail safe.
     if not successful_jobs:
+        logging.debug("  No successful jobs at all")
         return None
 
     # Something not flaky failed? Better not spam the world.
     if not all(is_flaky_job(j) for j in failed_jobs):
+        non_flaky_jobs = [j for j in failed_jobs if not is_flaky_job(j)]
+        logging.debug("  Non-flaky jobs failed (%s)",
+                      ', '.join(non_flaky_jobs))
         return None
 
     comment = "recheck no bug"
     if er_comment:
+        logging.debug("  Found Elastic Recheck comment")
         bug = extract_bug_number_from_er_message(er_comment['message'])
         if bug:
-            comment = "recheck bug %s" % bug
+            comment = "recheck bug %d" % bug
+    else:
+        logging.debug("  No Elastic Recheck comment found")
+
     return comment
 
 
@@ -170,22 +196,36 @@ def post_comment(review_id, comment):
     gerrit_cmd = ['ssh', '-p', str(GERRIT_PORT), GERRIT_SERVER, 'gerrit',
                   'review', '--message', '"%s"' % comment, review_id]
     subprocess.check_call(gerrit_cmd)
+    logging.info("  Comment posted.")
 
 
 def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('-v', '--verbose', action='store_true',
+                        default=False, help="Verbose output")
+    parser.add_argument('-p', '--post', action='store_true',
+                        default=False, help="Post 'recheck no bug' comments")
+    args = parser.parse_args()
+
+    # Get logging set up either verbosely or not
+    root_logger = logging.getLogger()
+    root_logger.setLevel(logging.DEBUG if args.verbose else logging.INFO)
+    handler = logging.StreamHandler(sys.stdout)
+    handler.setLevel(logging.DEBUG if args.verbose else logging.INFO)
+    root_logger.addHandler(handler)
+
     did_something = False
     for review in fetch_failed_reviews():
+        logging.debug("Considering review %s", review['url'])
         retry_comment = retry_with(review)
         if retry_comment is not None:
             if should_ignore_review(review):
                 continue
             did_something = True
-            print "%s -> %s" % (review['url'], retry_comment)
+            logging.info("%s -> %s", review['url'], retry_comment)
 
-            should_post_comment = (
-                os.environ.get('AUTO_RECHECK_POST', 'no').lower()
-                in ('true', '1', 'yes', 'on', 't', 'y'))
-            if should_post_comment:
+            if args.post:
+                logging.debug("  Going to post comment %s", retry_comment)
                 post_comment(review['currentPatchSet']['revision'],
                              retry_comment)
     if not did_something:
