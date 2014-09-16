@@ -66,7 +66,9 @@ def is_flaky_job(job_name):
     return (job_name.startswith("check-tempest-") or
             job_name.startswith("check-devstack-") or
             job_name.startswith("gate-tempest-") or
-            job_name.startswith("gate-devstack-"))
+            job_name.startswith("gate-devstack-") or
+            job_name.startswith("check-grenade-") or
+            job_name.startswith("gate-grenade-"))
 
 
 def extract_jobs_from_ci_message(comment):
