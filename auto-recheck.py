@@ -39,6 +39,16 @@ def fetch_failed_reviews():
 
 
 def should_ignore_review(review):
+    """
+    Whether or not a review should be ignored. This is all pretty specific
+    to OpenStack Swift.
+    """
+    # Let's not drag up the long-dead past.
+    if int(review['number']) < 100000:
+        logging.debug("  Ignoring review because its number (%d) is too small",
+                      int(review['number']))
+        return True
+
     # OpenStack Proposal Bot just does the global requirements stuff, and
     # nobody cares.
     if review['owner']['username'] == 'proposal-bot':
