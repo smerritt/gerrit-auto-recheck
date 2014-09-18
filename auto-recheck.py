@@ -176,14 +176,35 @@ def retry_with(review):
     # Either the last review comment is Jenkins *or* the second-to-last
     # comment is Jenkins(CI) and the last one is Elastic Recheck.
     ci_comment = er_comment = None
-    if comments[-1]['reviewer']['username'] == 'jenkins':
-        ci_comment = comments[-1]
-    elif (comments[-1]['reviewer']['username'] == 'elasticrecheck'
-          and comments[-2]['reviewer']['username'] == 'jenkins'):
-        er_comment = comments[-1]
-        ci_comment = comments[-2]
-    else:
-        logging.debug("  No CI comment in last 2 review comments")
+
+    for comment in reversed(comments):
+        if comment['timestamp'] < review['currentPatchSet']['createdOn']:
+            # Comment pre-dates current patch set, so it must be for a
+            # previous patch set.
+            #
+            # Note that it's possible for a comment to post-date the current
+            # patch set but still be for an older patch set, so it's
+            # possible for this to find a stale Jenkins comment. We go in
+            # reverse order to reduce the possibility, but worst case is we
+            # post "recheck no bug" when we don't need to. Given the number
+            # of people posting "recheck no bug", it's unlikely that anyone
+            # will notice.
+            break
+
+        if comment['message'].startswith("recheck "):
+            # Someone's already posted; ignore it
+            logging.debug("  Found existing 'recheck' comment")
+            return None
+
+        # Elastic Recheck always posts *after* jenkins
+        if comment['reviewer']['username'] == 'elasticrecheck' and not ci_comment:
+            er_comment = comment
+        elif comment['reviewer']['username'] == 'jenkins':
+            ci_comment = comment
+            break
+
+    if not ci_comment:
+        logging.debug("  No CI comment found for current patch set")
         return None
 
     failed_jobs, successful_jobs = extract_jobs_from_ci_message(
