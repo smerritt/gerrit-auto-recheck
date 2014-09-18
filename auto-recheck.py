@@ -49,6 +49,15 @@ def should_ignore_review(review):
                       int(review['number']))
         return True
 
+    # If there's a code-review -2 on it, then no amount of automatic
+    # rechecking will make people happy.
+    code_reviews = [int(ap['value'])
+                    for ap in review['currentPatchSet']['approvals']
+                    if ap['type'] == 'Code-Review']
+    if -2 in code_reviews:
+        logging.debug("  Ignoring review due to -2")
+        return True
+
     # OpenStack Proposal Bot just does the global requirements stuff, and
     # nobody cares.
     if review['owner']['username'] == 'proposal-bot':
