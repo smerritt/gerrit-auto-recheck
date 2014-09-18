@@ -247,6 +247,8 @@ def main():
                         default=False, help="Verbose output")
     parser.add_argument('-p', '--post', action='store_true',
                         default=False, help="Post 'recheck no bug' comments")
+    parser.add_argument('--debug-review', default=None, type=int,
+                        help="Launch debugger for this review number")
     args = parser.parse_args()
 
     # Get logging set up either verbosely or not
@@ -257,8 +259,14 @@ def main():
     root_logger.addHandler(handler)
 
     did_something = False
-    for review in fetch_failed_reviews():
+    failed_reviews = fetch_failed_reviews()
+    failed_reviews.sort(key=lambda r: int(r['number']))
+    for review in failed_reviews:
         logging.debug("Considering review %s", review['url'])
+        if int(review['number']) == args.debug_review:
+            import pdb
+            pdb.set_trace()
+
         retry_comment = retry_with(review)
         if retry_comment is not None:
             if should_ignore_review(review):
