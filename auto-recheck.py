@@ -58,9 +58,10 @@ def should_ignore_review(review):
         logging.debug("  Ignoring review due to -2")
         return True
 
-    # OpenStack Proposal Bot just does the global requirements stuff, and
-    # nobody cares.
-    if review['owner']['username'] == 'proposal-bot':
+    # OpenStack Proposal Bot proposes patches to [test-]requirements.txt
+    # that nobody in Swift cares about.
+    if (review['owner']['username'] == 'proposal-bot' and
+       "global requirements" in review['subject'].lower()):
         logging.debug("  Ignoring review because it's from proposal-bot")
         return True
 
