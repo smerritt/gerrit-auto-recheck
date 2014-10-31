@@ -67,8 +67,11 @@ def should_ignore_review(review):
 
     # Anything with a failure less than $MINIMUM_REVIEW_AGE seconds old
     # should wait to give Elastic Recheck a chance to do its thing.
-    if time.time() - review['comments'][-1]['timestamp'] <= MINIMUM_REVIEW_AGE:
-        logging.debug("  Ignoring review because it's too new")
+    age = time.time() - review['comments'][-1]['timestamp']
+    if age < MINIMUM_REVIEW_AGE:
+        logging.debug(
+            "  Ignoring review because it's too new (age %d, min %d)",
+            age, MINIMUM_REVIEW_AGE)
         return True
 
 
