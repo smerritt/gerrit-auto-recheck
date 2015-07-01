@@ -4,7 +4,6 @@ import argparse
 import json
 import logging
 import operator
-import os
 import re
 import subprocess
 import sys
@@ -41,7 +40,7 @@ def fetch_failed_reviews():
 def should_ignore_review(review):
     """
     Whether or not a review should be ignored. This is all pretty specific
-    to OpenStack Swift.
+    to OpenStack Swift and associated projects.
     """
     # Let's not drag up the long-dead past.
     if int(review['number']) < 100000:
@@ -75,13 +74,17 @@ def should_ignore_review(review):
         return True
 
 
-def is_flaky_job(job_name):
+def is_flaky_job(job_name, additional_flaky_jobs):
+    if additional_flaky_jobs is None:
+        additional_flaky_jobs = ()
+
     return (job_name.startswith("check-tempest-") or
             job_name.startswith("check-devstack-") or
             job_name.startswith("gate-tempest-") or
             job_name.startswith("gate-devstack-") or
             job_name.startswith("check-grenade-") or
-            job_name.startswith("gate-grenade-"))
+            job_name.startswith("gate-grenade-") or
+            job_name in additional_flaky_jobs)
 
 
 def extract_jobs_from_ci_message(comment):
@@ -163,7 +166,7 @@ def extract_bug_number_from_er_message(comment):
     return int(match.group(1)) if match else None
 
 
-def retry_with(review):
+def retry_with(review, additional_flaky_jobs):
     """
     How to retry a particular bug: returns the string to post in a comment to
     trigger an appropriate recheck.
@@ -220,8 +223,9 @@ def retry_with(review):
         return None
 
     # Something not flaky failed? Better not spam the world.
-    if not all(is_flaky_job(j) for j in failed_jobs):
-        non_flaky_jobs = [j for j in failed_jobs if not is_flaky_job(j)]
+    if not all(is_flaky_job(j, additional_flaky_jobs) for j in failed_jobs):
+        non_flaky_jobs = [j for j in failed_jobs
+                          if not is_flaky_job(j, additional_flaky_jobs)]
         logging.debug("  Non-flaky jobs failed (%s)",
                       ', '.join(non_flaky_jobs))
         return None
@@ -253,6 +257,8 @@ def main():
                         default=False, help="Post 'recheck no bug' comments")
     parser.add_argument('--debug-review', default=None, type=int,
                         help="Launch debugger for this review number")
+    parser.add_argument('--flaky', nargs="*",
+                        help="Additional jobs to consider flaky")
     args = parser.parse_args()
 
     # Get logging set up either verbosely or not
@@ -271,7 +277,7 @@ def main():
             import pdb
             pdb.set_trace()
 
-        retry_comment = retry_with(review)
+        retry_comment = retry_with(review, args.flaky)
         if retry_comment is not None:
             if should_ignore_review(review):
                 continue
