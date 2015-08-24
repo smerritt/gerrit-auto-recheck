@@ -37,7 +37,7 @@ def fetch_failed_reviews():
     return reviews
 
 
-def should_ignore_review(review):
+def should_ignore_review(review, bug_number):
     """
     Whether or not a review should be ignored. This is all pretty specific
     to OpenStack Swift and associated projects.
@@ -66,12 +66,17 @@ def should_ignore_review(review):
 
     # Anything with a failure less than $MINIMUM_REVIEW_AGE seconds old
     # should wait to give Elastic Recheck a chance to do its thing.
+    #
+    # However, if E-R has already done its thing, then we shouldn't wait.
     age = time.time() - review['comments'][-1]['timestamp']
-    if age < MINIMUM_REVIEW_AGE:
+    if age < MINIMUM_REVIEW_AGE and not bug_number:
         logging.debug(
             "  Ignoring review because it's too new (age %d, min %d)",
             age, MINIMUM_REVIEW_AGE)
         return True
+
+    # Default to not ignoring reviews.
+    return False
 
 
 def is_flaky_job(job_name, additional_flaky_jobs):
@@ -171,14 +176,16 @@ def retry_with(review, additional_flaky_jobs):
     How to retry a particular bug: returns the string to post in a comment to
     trigger an appropriate recheck.
 
-    :returns: None if no recheck needed,
-              "recheck no bug", or "recheck bug <N>".
+    :returns: (None, None) if no recheck needed,
+              ("recheck no bug", None), or ("recheck bug <N>", <N>).
+              It's a 2-tuple of (comment, bug number).
+
     """
 
     comments = review.get('comments', [])
     if not comments:
         logging.debug("  No review comments")
-        return None
+        return (None, None)
 
     # Either the last review comment is Jenkins *or* the second-to-last
     # comment is Jenkins(CI) and the last one is Elastic Recheck.
@@ -201,7 +208,7 @@ def retry_with(review, additional_flaky_jobs):
         if comment['message'].startswith("recheck "):
             # Someone's already posted; ignore it
             logging.debug("  Found existing 'recheck' comment")
-            return None
+            return (None, None)
 
         # Elastic Recheck always posts *after* jenkins
         if comment['reviewer']['username'] == 'elasticrecheck' and not ci_comment:
@@ -212,7 +219,7 @@ def retry_with(review, additional_flaky_jobs):
 
     if not ci_comment:
         logging.debug("  No CI comment found for current patch set")
-        return None
+        return (None, None)
 
     failed_jobs, successful_jobs = extract_jobs_from_ci_message(
         ci_comment['message'])
@@ -220,7 +227,7 @@ def retry_with(review, additional_flaky_jobs):
     # It is highly atypical that every job would fail, so let's fail safe.
     if not successful_jobs:
         logging.debug("  No successful jobs at all")
-        return None
+        return (None, None)
 
     # Something not flaky failed? Better not spam the world.
     if not all(is_flaky_job(j, additional_flaky_jobs) for j in failed_jobs):
@@ -228,18 +235,19 @@ def retry_with(review, additional_flaky_jobs):
                           if not is_flaky_job(j, additional_flaky_jobs)]
         logging.debug("  Non-flaky jobs failed (%s)",
                       ', '.join(non_flaky_jobs))
-        return None
+        return (None, None)
 
     comment = "recheck no bug"
+    bug_number = None
     if er_comment:
         logging.debug("  Found Elastic Recheck comment")
-        bug = extract_bug_number_from_er_message(er_comment['message'])
-        if bug:
-            comment = "recheck bug %d" % bug
+        bug_number = extract_bug_number_from_er_message(er_comment['message'])
+        if bug_number:
+            comment = "recheck bug %d" % bug_number
     else:
         logging.debug("  No Elastic Recheck comment found")
 
-    return comment
+    return (comment, bug_number)
 
 
 def post_comment(review_id, comment):
@@ -277,9 +285,9 @@ def main():
             import pdb
             pdb.set_trace()
 
-        retry_comment = retry_with(review, args.flaky)
+        retry_comment, bug_number = retry_with(review, args.flaky)
         if retry_comment is not None:
-            if should_ignore_review(review):
+            if should_ignore_review(review, bug_number):
                 continue
             did_something = True
             logging.info("%s -> %s", review['url'], retry_comment)
